@@ -28,3 +28,17 @@ numpy
 torch
 scikit-learn
 tqdm
+
+
+## Experimental Protocol Details
+Summary of the experimental setup:
+
+### Train/Test Split
+- **80% training / 20% testing**  
+- **Stratified sampling** with a fixed random seed (**42**)  
+- **No separate validation set**; performance was evaluated on the held-out test set  
+
+### Preprocessing Pipeline
+1. Random Forest-based feature importance** computed on a stratified 20% subsample  
+2 Both RF and DL used the **same 80/20 split** and **scaled feature matrix**  
+3. Ensures **full consistency and reproducibility**
