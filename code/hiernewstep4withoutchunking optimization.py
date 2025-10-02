@@ -1,247 +1,252 @@
-import pandas as pd
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
-from sklearn.feature_selection import mutual_info_classif
-import gc
-import psutil
-import argparse
 import os
-import pickle
+import re
+import csv
+import subprocess
+from pathlib import Path
+import pandas as pd
+import random
+import numpy as np
 
-# === Argument Parsing ===
-parser = argparse.ArgumentParser()
-parser.add_argument("--input", required=True, help="Input CSV with scaled k-mer features")
-parser.add_argument("--model_out", required=True, help="Path to save model weights (.pt)")
-parser.add_argument("--encoder_out", required=True, help="Path to save label encoder (.pkl)")
-args = parser.parse_args()
+# === Fixed seeds for reproducibility ===
+random.seed(42)
+np.random.seed(42)
 
-# === Derive .npy filename from model_out name ===
-base = os.path.splitext(os.path.basename(args.model_out))[0]
-npy_filename = f"kmer_importance_{base}.npy"
-
-# === I. Dataset Class ===
-class VirusMultiDataset(Dataset):
-    def __init__(self, X, y):
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.long)
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
-
-# === II. Neural Network Class ===
-class MultiClassClassifier(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256, num_classes=3):
-        super().__init__()
-        self.attn = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, input_dim)
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, num_classes)
-        )
-
-    def forward(self, x):
-        attn_weights = torch.sigmoid(self.attn(x))
-        x_weighted = x * attn_weights
-        logits = self.classifier(x_weighted)
-        return logits, attn_weights
-
-label_to_path = {
-    # Level 1
-    'Virus': ['Virus'],
-    'ERV': ['ERV'],
-    'NONERV': ['NONERV'],
-
-    # Level 2 - Baltimore Classes
-    'C1': ['Virus', 'C1'],
-    'C2': ['Virus', 'C2'],
-    'C3': ['Virus', 'C3'],
-    'C4': ['Virus', 'C4'],
-    'C5': ['Virus', 'C5'],
-    'C6': ['Virus', 'C6'],
-    'C7': ['Virus', 'C7'],
-
-    # Level 3 - Species (under each BC)
-    'African_swine_fever_virus': ['Virus', 'C1', 'African_swine_fever_virus'],
-    'Human_papillomaviruses(HPV)': ['Virus', 'C1', 'Human_papillomaviruses(HPV)'],
-    'HumanHeprevirus': ['Virus', 'C1', 'HumanHeprevirus'],
-
-    'Torque_teno_virus': ['Virus', 'C2', 'Torque_teno_virus'],
-    'Protoparvovirus': ['Virus', 'C2', 'Protoparvovirus'],
-    'Canine_parvovirus': ['Virus', 'C2', 'Canine_parvovirus'],
-
-    'Bluetongue_Virus': ['Virus', 'C3', 'Bluetongue_Virus'],
-    'RotaVirus': ['Virus', 'C3', 'RotaVirus'],
-    'Infectious_bursal_disease_virus': ['Virus', 'C3', 'Infectious_bursal_disease_virus'],
-
-    'Dengue_Virus_Type_1': ['Virus', 'C4', 'Dengue_Virus_Type_1'],
-    'Hepatitis_C_virus': ['Virus', 'C4', 'Hepatitis_C_virus'],
-    'Norovirus': ['Virus', 'C4', 'Norovirus'],
-
-    'HantaVirus': ['Virus', 'C5', 'HantaVirus'],
-    'Influenza__A_Virus': ['Virus', 'C5', 'Influenza_A_Virus'],
-    'Measles_Virus': ['Virus', 'C5', 'Measles_Virus'],
-
-    'Bovine__diarrhea_virus': ['Virus', 'C6', 'Bovine_diarrhea_virus'],
-    'HIV_I': ['Virus', 'C6', 'HIV_I'],
-    'HTLV_I': ['Virus', 'C6', 'HTLV_I'],
-
-    'Badnavirus': ['Virus', 'C7', 'Badnavirus'],
-    'Cauliflower652+Dahli75a_mosaic_Virus': ['Virus', 'C7', 'Cauliflower652+Dahli75a_mosaic_Virus'],
-    'Hypathitas_B_Virus': ['Virus', 'C7', 'Hypathitas_B_Virus'],
+# === IUPAC ambiguity codes and resolver ===
+IUPAC_CODES = {
+    'A': ['A'],
+    'C': ['C'],
+    'G': ['G'],
+    'T': ['T'],
+    'R': ['A', 'G'],
+    'Y': ['C', 'T'],
+    'S': ['G', 'C'],
+    'W': ['A', 'T'],
+    'K': ['G', 'T'],
+    'M': ['A', 'C'],
+    'B': ['C', 'G', 'T'],
+    'D': ['A', 'G', 'T'],
+    'H': ['A', 'C', 'T'],
+    'V': ['A', 'C', 'G'],
+    'N': ['A', 'C', 'G', 'T']
 }
 
-def hierarchical_metrics(y_true, y_pred, label_encoder):
-    correct = 0
-    total_precision = 0
-    total_recall = 0
-    N = len(y_true)
-
-    for yt, yp in zip(y_true, y_pred):
-        true_label = label_encoder.inverse_transform([yt])[0]
-        pred_label = label_encoder.inverse_transform([yp])[0]
-
-        true_path = set(label_to_path.get(true_label, []))
-        pred_path = set(label_to_path.get(pred_label, []))
-
-        intersection = len(true_path & pred_path)
-        precision = intersection / len(pred_path) if pred_path else 0
-        recall = intersection / len(true_path) if true_path else 0
-
-        total_precision += precision
-        total_recall += recall
-
-    h_precision = total_precision / N
-    h_recall = total_recall / N
-    h_f1 = (2 * h_precision * h_recall) / (h_precision + h_recall + 1e-8)
-
-    return h_precision, h_recall, h_f1
-
-# === IV. Load Data ===
-print("🔄 Loading scaled k-mer dataset...")
-df = pd.read_csv(args.input).dropna()
-df["Label"] = df["Label"].astype(str)
-features = df.drop(columns=["Label"]).astype(np.float32).values
-labels = df["Label"].values
-X = features
-input_dim = X.shape[1]
-print(f"ℹ️ Input feature dimension: {input_dim}")
-del df
-gc.collect()
-
-# === Label Encoding ===
-label_encoder = LabelEncoder()
-y = label_encoder.fit_transform(labels).astype(np.int64)
-num_classes = len(label_encoder.classes_)
-
-with open(args.encoder_out, "wb") as f:
-    pickle.dump(label_encoder, f)
-
-# === Train-Test Split ===
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, stratify=y, random_state=42
-)
-
-train_loader = DataLoader(VirusMultiDataset(X_train, y_train), batch_size=32, shuffle=True, pin_memory=True, num_workers=0)
-test_loader = DataLoader(VirusMultiDataset(X_test, y_test), batch_size=32, pin_memory=True, num_workers=0)
-
-# === Mutual Information-based Attention Supervision ===
-print("🔍 Computing MI-based feature importance...")
-X_mi, _, y_mi, _ = train_test_split(X, y, train_size=0.2, stratify=y, random_state=1)
-mi_scores = mutual_info_classif(X_mi, y_mi, discrete_features=False)
-mi_scores = mi_scores / np.sum(mi_scores)
-np.save(npy_filename, mi_scores)
-print(f"✅ MI scores saved and normalized to {npy_filename}.")
-del X_mi, y_mi
-gc.collect()
-
-# === Model Initialization ===
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = MultiClassClassifier(input_dim=input_dim, num_classes=num_classes).to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-importance_vector = torch.tensor(mi_scores, dtype=torch.float32).to(device)
-lambda_reg = 0.1
-
-# === Training Loop ===
-for epoch in range(1, 101):
-    model.train()
-    total_loss = 0
-    for inputs, targets in train_loader:
-        inputs, targets = inputs.to(device), targets.to(device)
-        outputs, attn_weights = model(inputs)
-
-        loss_ce = criterion(outputs, targets)
-        batch_importance = importance_vector.unsqueeze(0).expand_as(attn_weights)
-        loss_attn = nn.functional.mse_loss(attn_weights, batch_importance)
-        loss = loss_ce + lambda_reg * loss_attn
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-
-    if epoch % 2 == 0:
-        print(f"\n📉 Epoch {epoch}: Total Loss = {total_loss:.2f}, CE = {loss_ce.item():.2f}, ATTN = {loss_attn.item():.2f}")
-
-        # === Evaluation ===
-        model.eval()
-        all_preds, all_targets = [], []
-        with torch.no_grad():
-            for inputs, targets in test_loader:
-                inputs, targets = inputs.to(device), targets.to(device)
-                logits, _ = model(inputs)
-                preds = torch.argmax(logits, dim=1)
-                all_preds.extend(preds.cpu().numpy())
-                all_targets.extend(targets.cpu().numpy())
-
-        acc = accuracy_score(all_targets, all_preds)
-        f1 = f1_score(all_targets, all_preds, average='weighted')
-        h_precision, h_recall, h_f1 = hierarchical_metrics(all_targets, all_preds, label_encoder)
-
-        print(f"🔁 Eval @ Epoch {epoch} — Accuracy: {acc:.4f}, F1: {f1:.4f}, HF1: {h_f1:.4f}")
+def resolve_ambiguous_bases(seq):
+    """Replace ambiguous IUPAC codes with a random valid nucleotide."""
+    return ''.join(random.choice(IUPAC_CODES.get(base, ['N'])) for base in seq.upper())
 
 
-# === Final Evaluation ===
-print("\n📊 Final Evaluation...")
-model.eval()
-all_preds, all_targets = [], []
+# === Subprocess Output Handling ===
+def run_and_capture(command):
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               encoding='utf8', errors='replace')
+    full_output = ""
+    for line in process.stdout:
+        print(line, end="")  # Live output
+        full_output += line
+    process.wait()
+    return full_output
 
-with torch.no_grad():
-    for inputs, targets in test_loader:
-        inputs, targets = inputs.to(device), targets.to(device)
-        logits, _ = model(inputs)
-        preds = torch.argmax(logits, dim=1)
-        all_preds.extend(preds.cpu().numpy())
-        all_targets.extend(targets.cpu().numpy())
 
-acc = accuracy_score(all_targets, all_preds)
-f1 = f1_score(all_targets, all_preds, average='weighted')
-h_precision, h_recall, h_f1 = hierarchical_metrics(all_targets, all_preds, label_encoder)
+def parse_metrics(output_text):
+    acc = f1 = prec = rec = h_prec = h_rec = h_f1 = "N/A"
+    for line in output_text.splitlines():
+        if "Accuracy:" in line:
+            acc = line.split("Accuracy:")[1].strip()
+        elif "Precision:" in line and "Hierarchical" not in line:
+            prec = line.split("Precision:")[1].strip()
+        elif "Recall:" in line and "Hierarchical" not in line:
+            rec = line.split("Recall:")[1].strip()
+        elif "F1 Score:" in line and "Hierarchical" not in line:
+            f1 = line.split("F1 Score:")[1].strip()
+        elif "Hierarchical Precision:" in line:
+            h_prec = line.split("Hierarchical Precision:")[1].strip()
+        elif "Hierarchical Recall:" in line:
+            h_rec = line.split("Hierarchical Recall:")[1].strip()
+        elif "Hierarchical F1 Score:" in line:
+            h_f1 = line.split("Hierarchical F1 Score:")[1].strip()
+    return acc, prec, rec, f1, h_prec, h_rec, h_f1
 
-print("\n✅ Final Results:")
-print(f"Accuracy: {acc:.4f}")
-print(f"F1 Score (Weighted): {f1:.4f}")
-print(f"Hierarchical Precision: {h_precision:.4f}")
-print(f"Hierarchical Recall: {h_recall:.4f}")
-print(f"Hierarchical F1 (HF1): {h_f1:.4f}")
 
-print("🧾 Label Encoding Mapping:")
-for i, label in enumerate(label_encoder.classes_):
-    print(f"{i} = {label}")
 
-torch.save(model.state_dict(), args.model_out)
-print(f"✅ Model saved to {args.model_out}")
-print(f"🧠 Peak Memory Used: {psutil.virtual_memory().used / 1e9:.2f} GB")
+# === Fasta Parsing and Labeling ===
+def fasta_to_processed(input_file, output_file, min_length=100):
+    bad_lines = []
+    with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
+        seq = ''
+        for line in infile:
+            if line.startswith('>'):
+                if seq and len(seq) >= min_length:
+                    resolved = resolve_ambiguous_bases(seq)
+                    outfile.write(resolved + '\n')
+                seq = ''
+            else:
+                seq += line.strip()
+        if seq and len(seq) >= min_length:
+            resolved = resolve_ambiguous_bases(seq)
+            outfile.write(resolved + '\n')
+
+def label_sequences(input_files, labels, output_file):
+    with open(output_file, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Sequence', 'Label'])
+        for fpath, label in zip(input_files, labels):
+            with open(fpath, 'r') as f:
+                for line in f:
+                    seq = line.strip()
+                    if seq:
+                        writer.writerow([seq, label])
+    print(f"✅ Wrote labeled sequences to {output_file}")
+
+def extract_files(folder, exclude_erv=True):
+    files = []
+    labels = []
+    for fname in os.listdir(folder):
+        if "_processed" not in fname:
+            continue
+        if exclude_erv and ("erv" in fname.lower() or "nonerv" in fname.lower()):
+            continue
+
+        path = os.path.join(folder, fname)
+        fname_lower = fname.lower()
+
+        if "nonerv" in fname_lower:
+            label = "NONERV"
+        elif "erv" in fname_lower:
+            label = "ERV"
+        else:
+            label = "Virus"
+
+        files.append(path)
+        labels.append(label)
+
+    return files, labels
+
+def extract_files_level2(folder):
+    files = []
+    labels = []
+    for fname in os.listdir(folder):
+        if "_processed" not in fname:
+            continue
+        if "erv" in fname.lower() or "nonerv" in fname.lower():
+            continue  # exclude non-viral
+
+        path = os.path.join(folder, fname)
+        match = re.search(r'C[1-7]', fname)
+        if match:
+            label = match.group(0)
+            files.append(path)
+            labels.append(label)
+        else:
+            print(f"⚠️ Skipping {fname}: No C[1-7] match")
+
+    return files, labels
+
+# === Step 1: Label Level 1 and Level 2 ===
+print("🔹 Generating labeled_level1.csv...")
+l1_files, l1_labels = extract_files("BaltimoreClassification", exclude_erv=False)
+label_sequences(l1_files, l1_labels, "labeled_level1.csv")
+
+print("🔹 Generating labeled_level2.csv...")
+l2_files, l2_labels = extract_files_level2("BaltimoreClassification")
+label_sequences(l2_files, l2_labels, "labeled_level2.csv")
+
+
+# === Step 2: Label Species-Level ===
+print("🔧 Preprocessing and labeling species FASTA files for Level 3...")
+species_input = "BaltimoreClassification/Species"
+species_output_root = "species_by_class"
+Path(species_output_root).mkdir(exist_ok=True)
+
+for file in os.listdir(species_input):
+    if not file.endswith(('.fasta', '.fa')):
+        continue
+    baltimore = re.search(r'C[1-7]', file)
+    if not baltimore:
+        print(f"⚠️ Skipping {file}: No Baltimore class found")
+        continue
+    class_label = baltimore.group(0)
+    species_name = re.sub(r'C[1-7]', '', file).replace('.fasta', '').replace('.fa', '').strip().replace(' ', '_')
+    output_dir = os.path.join(species_output_root, class_label)
+    Path(output_dir).mkdir(exist_ok=True)
+    input_path = os.path.join(species_input, file)
+    output_path = os.path.join(output_dir, f"{species_name}_processed.txt")
+    fasta_to_processed(input_path, output_path)
+
+print("🔹 Labeling species-level CSVs...")
+for class_dir in sorted(os.listdir(species_output_root)):
+    class_path = os.path.join(species_output_root, class_dir)
+    if not os.path.isdir(class_path) or not re.fullmatch(r'C[1-7]', class_dir):
+        continue
+
+    species_files = [os.path.join(class_path, f) for f in os.listdir(class_path) if f.endswith("_processed.txt")]
+    species_labels = [f.split("_processed")[0] for f in os.listdir(class_path) if f.endswith("_processed.txt")]
+
+    output_csv = f"labeled_{class_dir}.csv"
+    label_sequences(species_files, species_labels, output_csv)
+
+# === Step 3: Run Pipeline for k = 3 to 5 ===
+results = []
+
+for k in range(3, 6):
+    print(f"\n🔁 === Running Level 1 for k={k} ===")
+    run_and_capture(["python", "step2withchunks4hierichial.py", "--input", "labeled_level1.csv", "--output", f"kmer_level1_k{k}.csv", "--k", str(k)])
+    run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", f"kmer_level1_k{k}.csv", "--output", f"scaled_level1_k{k}.csv", "--importance_out", f"importance_level1_k{k}.csv"])
+    l1_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", f"scaled_level1_k{k}.csv", "--model_out", f"model_level1_k{k}.pt", "--encoder_out", f"encoder_level1_k{k}.pkl", "--loss_out", f"loss_level1_k{k}.csv"])
+    acc1, prec1, rec1, f1_1, hprec1, hrec1, hf1_1 = parse_metrics(l1_result)
+    results.append({
+        "k": k, "Level": "Level 1",
+        "Accuracy": acc1,
+        "Precision": prec1,
+        "Recall": rec1,
+        "F1 Score": f1_1,
+        "Hierarchical Precision": hprec1,
+        "Hierarchical Recall": hrec1,
+        "Hierarchical F1 Score": hf1_1
+    })
+
+    print(f"\n🔁 === Running Level 2 for k={k} ===")
+    run_and_capture(["python", "step2withchunks4hierichial.py", "--input", "labeled_level2.csv", "--output", f"kmer_level2_k{k}.csv", "--k", str(k)])
+    run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", f"kmer_level2_k{k}.csv", "--output", f"scaled_level2_k{k}.csv", "--importance_out", f"importance_level2_k{k}.csv"])
+    l2_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", f"scaled_level2_k{k}.csv", "--model_out", f"model_level2_k{k}.pt", "--encoder_out", f"encoder_level2_k{k}.pkl", "--loss_out", f"loss_level2_k{k}.csv"])
+    acc2, prec2, rec2, f1_2, hprec2, hrec2, hf1_2 = parse_metrics(l2_result)
+    results.append({
+        "k": k, "Level": "Level 2",
+        "Accuracy": acc2,
+        "Precision": prec2,
+        "Recall": rec2,
+        "F1 Score": f1_2,
+        "Hierarchical Precision": hprec2,
+        "Hierarchical Recall": hrec2,
+        "Hierarchical F1 Score": hf1_2
+    })
+
+    print(f"\n🔁 === Running Level 3 (species) for k={k} ===")
+    for c in range(1, 8):
+        class_label = f"C{c}"
+        labeled = f"labeled_{class_label}.csv"
+        kmer_out = f"kmer_{class_label}_k{k}.csv"
+        scaled_out = f"scaled_{class_label}_k{k}.csv"
+        imp_out = f"importance_{class_label}_k{k}.csv"
+        model_out = f"model_{class_label}_k{k}.pt"
+        enc_out = f"encoder_{class_label}_k{k}.pkl"
+
+        run_and_capture(["python", "step2withchunks4hierichial.py", "--input", labeled, "--output", kmer_out, "--k", str(k)])
+        run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", kmer_out, "--output", scaled_out, "--importance_out", imp_out])
+        l3_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", scaled_out, "--model_out", model_out, "--encoder_out", enc_out,  "--loss_out", f"loss_{class_label}_k{k}.csv"])
+        acc3, prec3, rec3, f1_3, hprec3, hrec3, hf1_3 = parse_metrics(l3_result)
+        results.append({
+            "k": k, "Level": "Level 3",
+            "Accuracy": acc3,
+            "Precision": prec3,
+            "Recall": rec3,
+            "F1 Score": f1_3,
+            "Hierarchical Precision": hprec3,
+            "Hierarchical Recall": hrec3,
+            "Hierarchical F1 Score": hf1_3
+        })
+
+
+# === Save Results ===
+df = pd.DataFrame(results)
+df.to_csv("kmer_results.csv", index=False)
+print("\n📄 Saved all results to kmer_results.csv")
