@@ -44,5 +44,5 @@ Summary of the experimental setup:
 
 ### Preprocessing Pipeline
 1. Random Forest-based feature importance** computed on a stratified 20% subsample  
-2 Both RF and DL used the **same 80/20 split** and **scaled feature matrix**  
+    Both RF and DL models used the **same 80/20 split** and the **scaled feature matrix**  
 3. Ensures **full consistency and reproducibility**
