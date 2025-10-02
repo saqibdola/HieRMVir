@@ -5,6 +5,11 @@ import subprocess
 from pathlib import Path
 import pandas as pd
 import random
+import numpy as np
+
+# === Fixed seeds for reproducibility ===
+random.seed(42)
+np.random.seed(42)
 
 # === IUPAC ambiguity codes and resolver ===
 IUPAC_CODES = {
@@ -32,7 +37,8 @@ def resolve_ambiguous_bases(seq):
 
 # === Subprocess Output Handling ===
 def run_and_capture(command):
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding='utf8', errors='replace')
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               encoding='utf8', errors='replace')
     full_output = ""
     for line in process.stdout:
         print(line, end="")  # Live output
@@ -40,18 +46,31 @@ def run_and_capture(command):
     process.wait()
     return full_output
 
+
 def parse_metrics(output_text):
-    acc = f1 = "N/A"
+    acc = f1 = prec = rec = h_prec = h_rec = h_f1 = "N/A"
     for line in output_text.splitlines():
         if "Accuracy:" in line:
             acc = line.split("Accuracy:")[1].strip()
-        elif "F1 Score:" in line:
+        elif "Precision:" in line and "Hierarchical" not in line:
+            prec = line.split("Precision:")[1].strip()
+        elif "Recall:" in line and "Hierarchical" not in line:
+            rec = line.split("Recall:")[1].strip()
+        elif "F1 Score:" in line and "Hierarchical" not in line:
             f1 = line.split("F1 Score:")[1].strip()
-    return acc, f1
+        elif "Hierarchical Precision:" in line:
+            h_prec = line.split("Hierarchical Precision:")[1].strip()
+        elif "Hierarchical Recall:" in line:
+            h_rec = line.split("Hierarchical Recall:")[1].strip()
+        elif "Hierarchical F1 Score:" in line:
+            h_f1 = line.split("Hierarchical F1 Score:")[1].strip()
+    return acc, prec, rec, f1, h_prec, h_rec, h_f1
+
 
 
 # === Fasta Parsing and Labeling ===
 def fasta_to_processed(input_file, output_file, min_length=100):
+    bad_lines = []
     with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
         seq = ''
         for line in infile:
@@ -122,7 +141,6 @@ def extract_files_level2(folder):
 
     return files, labels
 
-
 # === Step 1: Label Level 1 and Level 2 ===
 print("🔹 Generating labeled_level1.csv...")
 l1_files, l1_labels = extract_files("BaltimoreClassification", exclude_erv=False)
@@ -166,7 +184,6 @@ for class_dir in sorted(os.listdir(species_output_root)):
     output_csv = f"labeled_{class_dir}.csv"
     label_sequences(species_files, species_labels, output_csv)
 
-
 # === Step 3: Run Pipeline for k = 3 to 5 ===
 results = []
 
@@ -174,16 +191,34 @@ for k in range(3, 6):
     print(f"\n🔁 === Running Level 1 for k={k} ===")
     run_and_capture(["python", "step2withchunks4hierichial.py", "--input", "labeled_level1.csv", "--output", f"kmer_level1_k{k}.csv", "--k", str(k)])
     run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", f"kmer_level1_k{k}.csv", "--output", f"scaled_level1_k{k}.csv", "--importance_out", f"importance_level1_k{k}.csv"])
-    l1_result = run_and_capture(["python", "hiernewstep4withoutchunking optimization.py", "--input", f"scaled_level1_k{k}.csv", "--model_out", f"model_level1_k{k}.pt", "--encoder_out", f"encoder_level1_k{k}.pkl"])
-    acc1, f1_1 = parse_metrics(l1_result)
-    results.append({"k": k, "Level": "Level 1", "Accuracy": acc1, "F1 Score": f1_1})
+    l1_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", f"scaled_level1_k{k}.csv", "--model_out", f"model_level1_k{k}.pt", "--encoder_out", f"encoder_level1_k{k}.pkl", "--loss_out", f"loss_level1_k{k}.csv"])
+    acc1, prec1, rec1, f1_1, hprec1, hrec1, hf1_1 = parse_metrics(l1_result)
+    results.append({
+        "k": k, "Level": "Level 1",
+        "Accuracy": acc1,
+        "Precision": prec1,
+        "Recall": rec1,
+        "F1 Score": f1_1,
+        "Hierarchical Precision": hprec1,
+        "Hierarchical Recall": hrec1,
+        "Hierarchical F1 Score": hf1_1
+    })
 
     print(f"\n🔁 === Running Level 2 for k={k} ===")
     run_and_capture(["python", "step2withchunks4hierichial.py", "--input", "labeled_level2.csv", "--output", f"kmer_level2_k{k}.csv", "--k", str(k)])
     run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", f"kmer_level2_k{k}.csv", "--output", f"scaled_level2_k{k}.csv", "--importance_out", f"importance_level2_k{k}.csv"])
-    l2_result = run_and_capture(["python", "hiernewstep4withoutchunking optimization.py", "--input", f"scaled_level2_k{k}.csv", "--model_out", f"model_level2_k{k}.pt", "--encoder_out", f"encoder_level2_k{k}.pkl"])
-    acc2, f1_2 = parse_metrics(l2_result)
-    results.append({"k": k, "Level": "Level 2", "Accuracy": acc2, "F1 Score": f1_2})
+    l2_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", f"scaled_level2_k{k}.csv", "--model_out", f"model_level2_k{k}.pt", "--encoder_out", f"encoder_level2_k{k}.pkl", "--loss_out", f"loss_level2_k{k}.csv"])
+    acc2, prec2, rec2, f1_2, hprec2, hrec2, hf1_2 = parse_metrics(l2_result)
+    results.append({
+        "k": k, "Level": "Level 2",
+        "Accuracy": acc2,
+        "Precision": prec2,
+        "Recall": rec2,
+        "F1 Score": f1_2,
+        "Hierarchical Precision": hprec2,
+        "Hierarchical Recall": hrec2,
+        "Hierarchical F1 Score": hf1_2
+    })
 
     print(f"\n🔁 === Running Level 3 (species) for k={k} ===")
     for c in range(1, 8):
@@ -197,9 +232,18 @@ for k in range(3, 6):
 
         run_and_capture(["python", "step2withchunks4hierichial.py", "--input", labeled, "--output", kmer_out, "--k", str(k)])
         run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", kmer_out, "--output", scaled_out, "--importance_out", imp_out])
-        l3_result = run_and_capture(["python", "hiernewstep4withoutchunking optimization.py", "--input", scaled_out, "--model_out", model_out, "--encoder_out", enc_out])
-        acc3, f1_3 = parse_metrics(l3_result)
-        results.append({"k": k, "Level": f"Level 3 - {class_label}", "Accuracy": acc3, "F1 Score": f1_3})
+        l3_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", scaled_out, "--model_out", model_out, "--encoder_out", enc_out,  "--loss_out", f"loss_{class_label}_k{k}.csv"])
+        acc3, prec3, rec3, f1_3, hprec3, hrec3, hf1_3 = parse_metrics(l3_result)
+        results.append({
+            "k": k, "Level": "Level 3",
+            "Accuracy": acc3,
+            "Precision": prec3,
+            "Recall": rec3,
+            "F1 Score": f1_3,
+            "Hierarchical Precision": hprec3,
+            "Hierarchical Recall": hrec3,
+            "Hierarchical F1 Score": hf1_3
+        })
 
 
 # === Save Results ===
