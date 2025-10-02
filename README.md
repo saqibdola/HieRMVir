@@ -34,8 +34,11 @@ psutil5.9.6
 ```
 
 ## Code for NonERV sequences
+
 The non-ERV sequences were generated using a two-step Python pipeline.
+
 - ​​**nonerv.py​​**: Identifies and extracts long genomic regions free of ERV annotations.
+- 
 ​​- **nonerv2.py​​**: Randomly fragments the cleaned sequences into chunks for analysis.
 
 ## Experimental Protocol Details
