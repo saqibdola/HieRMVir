@@ -23,11 +23,14 @@
 ## Requirements
 
 ```text
-pandas
-numpy
-torch
-scikit-learn
-tqdm
+python 3.10
+pandas 2.1.3
+numpy 1.26.0
+torch 2.2.1
+scikit-learn 1.3.2
+joblib 1.3.2
+tqdm 4.66.1
+psutil5.9.6
 ```
 
 
