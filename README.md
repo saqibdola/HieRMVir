@@ -38,8 +38,7 @@ psutil5.9.6
 The non-ERV sequences were generated using a two-step Python pipeline.
 
 - ​​**nonerv.py​​**: Identifies and extracts long genomic regions free of ERV annotations.
-- 
-​​- **nonerv2.py​​**: Randomly fragments the cleaned sequences into chunks for analysis.
+- **nonerv2.py​​**: Randomly fragments the cleaned sequences into chunks for analysis.
 
 ## Experimental Protocol Details
 Summary of the experimental setup:
