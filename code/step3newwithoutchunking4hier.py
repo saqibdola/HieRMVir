@@ -41,9 +41,20 @@ rf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
 rf.fit(X_sub, y_sub)
 importances = rf.feature_importances_
 
+'''
 # === Step 5: Normalize importances ===
 scaler = MinMaxScaler()
 normalized_importances = scaler.fit_transform(importances.reshape(-1, 1)).flatten()
+print("📊 Normalized importance range:", normalized_importances.min(), "to", normalized_importances.max())
+'''
+
+# === Step 5: Normalize importances with safe fallback ===
+w = importances.astype(np.float64)
+den = w.max() - w.min()
+if den < 1e-8:
+    normalized_importances = np.ones_like(w)  # neutral scaling if all weights equal
+else:
+    normalized_importances = (w - w.min()) / den
 print("📊 Normalized importance range:", normalized_importances.min(), "to", normalized_importances.max())
 
 # === Step 6: Save feature importances to CSV ===
