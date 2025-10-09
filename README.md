@@ -15,10 +15,10 @@
 
 | Script | Description |
 |--------|-------------|
-| `newhierichalmodelwithvaryingkIUPAC.py` | Master pipeline to process FASTA, label, extract features, and run models |
-| `step2withchunks4hierichial.py` | Chunked k-mer frequency extraction |
-| `step3newwithoutchunking4hier.py` | Feature scaling based on Random Forest importances |
-| `hiernewstep4withoutchunking_optimization.py` | Attention-based neural network training with MI guidance |
+| `hiermvirMain.py` | Master pipeline to process FASTA, label, extract features, and run models |
+| `kmerFE.py` | Chunked k-mer frequency extraction |
+| `featureWRF.py` | Feature scaling based on Random Forest importances |
+| `AttentionDL.py` | Attention-based neural network training with MI guidance |
 
 ## Requirements
 
