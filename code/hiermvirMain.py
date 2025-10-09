@@ -189,9 +189,9 @@ results = []
 
 for k in range(3, 6):
     print(f"\n🔁 === Running Level 1 for k={k} ===")
-    run_and_capture(["python", "step2withchunks4hierichial.py", "--input", "labeled_level1.csv", "--output", f"kmer_level1_k{k}.csv", "--k", str(k)])
-    run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", f"kmer_level1_k{k}.csv", "--output", f"scaled_level1_k{k}.csv", "--importance_out", f"importance_level1_k{k}.csv"])
-    l1_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", f"scaled_level1_k{k}.csv", "--model_out", f"model_level1_k{k}.pt", "--encoder_out", f"encoder_level1_k{k}.pkl", "--loss_out", f"loss_level1_k{k}.csv"])
+    run_and_capture(["python", "kmerFE.py", "--input", "labeled_level1.csv", "--output", f"kmer_level1_k{k}.csv", "--k", str(k)])
+    run_and_capture(["python", "featureWRF.py", "--input", f"kmer_level1_k{k}.csv", "--output", f"scaled_level1_k{k}.csv", "--importance_out", f"importance_level1_k{k}.csv"])
+    l1_result = run_and_capture(["python", "AttentionDL.py", "--input", f"scaled_level1_k{k}.csv", "--model_out", f"model_level1_k{k}.pt", "--encoder_out", f"encoder_level1_k{k}.pkl", "--loss_out", f"loss_level1_k{k}.csv"])
     acc1, prec1, rec1, f1_1, hprec1, hrec1, hf1_1 = parse_metrics(l1_result)
     results.append({
         "k": k, "Level": "Level 1",
@@ -205,9 +205,9 @@ for k in range(3, 6):
     })
 
     print(f"\n🔁 === Running Level 2 for k={k} ===")
-    run_and_capture(["python", "step2withchunks4hierichial.py", "--input", "labeled_level2.csv", "--output", f"kmer_level2_k{k}.csv", "--k", str(k)])
-    run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", f"kmer_level2_k{k}.csv", "--output", f"scaled_level2_k{k}.csv", "--importance_out", f"importance_level2_k{k}.csv"])
-    l2_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", f"scaled_level2_k{k}.csv", "--model_out", f"model_level2_k{k}.pt", "--encoder_out", f"encoder_level2_k{k}.pkl", "--loss_out", f"loss_level2_k{k}.csv"])
+    run_and_capture(["python", "kmerFE.py", "--input", "labeled_level2.csv", "--output", f"kmer_level2_k{k}.csv", "--k", str(k)])
+    run_and_capture(["python", "featureWRF.py", "--input", f"kmer_level2_k{k}.csv", "--output", f"scaled_level2_k{k}.csv", "--importance_out", f"importance_level2_k{k}.csv"])
+    l2_result = run_and_capture(["python", "AttentionDL.py", "--input", f"scaled_level2_k{k}.csv", "--model_out", f"model_level2_k{k}.pt", "--encoder_out", f"encoder_level2_k{k}.pkl", "--loss_out", f"loss_level2_k{k}.csv"])
     acc2, prec2, rec2, f1_2, hprec2, hrec2, hf1_2 = parse_metrics(l2_result)
     results.append({
         "k": k, "Level": "Level 2",
@@ -230,9 +230,9 @@ for k in range(3, 6):
         model_out = f"model_{class_label}_k{k}.pt"
         enc_out = f"encoder_{class_label}_k{k}.pkl"
 
-        run_and_capture(["python", "step2withchunks4hierichial.py", "--input", labeled, "--output", kmer_out, "--k", str(k)])
-        run_and_capture(["python", "step3newwithoutchunking4hier.py", "--input", kmer_out, "--output", scaled_out, "--importance_out", imp_out])
-        l3_result = run_and_capture(["python", "step4withoutchunking optimization23june.py", "--input", scaled_out, "--model_out", model_out, "--encoder_out", enc_out,  "--loss_out", f"loss_{class_label}_k{k}.csv"])
+        run_and_capture(["python", "kmerFE.py", "--input", labeled, "--output", kmer_out, "--k", str(k)])
+        run_and_capture(["python", "featureWRF.py", "--input", kmer_out, "--output", scaled_out, "--importance_out", imp_out])
+        l3_result = run_and_capture(["python", "AttentionDL.py", "--input", scaled_out, "--model_out", model_out, "--encoder_out", enc_out,  "--loss_out", f"loss_{class_label}_k{k}.csv"])
         acc3, prec3, rec3, f1_3, hprec3, hrec3, hf1_3 = parse_metrics(l3_result)
         results.append({
             "k": k, "Level": "Level 3",
@@ -250,5 +250,6 @@ for k in range(3, 6):
 df = pd.DataFrame(results)
 df.to_csv("kmer_results.csv", index=False)
 print("\n📄 Saved all results to kmer_results.csv")
+
 
 
